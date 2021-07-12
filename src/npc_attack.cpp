@@ -81,10 +81,13 @@ npc_attack_rating npc_attack_rating::operator-=( const int rhs )
     return *this;
 }
 
-void npc_attack_melee::use( npc &source, const tripoint &location ) const
+void npc_attack_melee::use(npc& source, const tripoint& location) const
 {
-    if( !source.wield( weapon ) ) {
-        debugmsg( "ERROR: npc tried to melee monster with weapon it couldn't wield" );
+    if (!source.is_wielding(weapon)) {
+        if (!source.wield(weapon))
+        {
+            debugmsg("ERROR: npc tried to melee monster with weapon it couldn't wield");
+        }
         return;
     }
     Creature *critter = g->critter_at( location );
@@ -92,10 +95,39 @@ void npc_attack_melee::use( npc &source, const tripoint &location ) const
         debugmsg( "ERROR: npc tried to attack null critter" );
         return;
     }
-    if( !source.is_adjacent( critter, true ) ) {
-        add_msg_debug( debugmode::debug_filter::DF_NPC, "%s is attempting a reach attack",
-                       source.disp_name() );
-        source.reach_attack( location );
+    if (!source.is_adjacent(critter, true))
+    {
+        if (rl_dist(source.pos(), location) <= weapon.reach_range(source))
+        {
+            add_msg_debug(debugmode::debug_filter::DF_NPC, "%s is attempting a reach attack",
+                source.disp_name());
+            source.reach_attack(location);
+        }
+        else
+        {
+            source.update_path(location);
+            if (source.path.size() > 1)
+            {
+                source.move_to_next();
+            }
+            else if (source.path.size() == 1)
+            {
+                if (critter != nullptr)
+                {
+                    if (source.can_use_offensive_cbm())
+                    {
+                        source.activate_bionic_by_id(bionic_id("bio_hydraulics"));
+                    }
+                    add_msg_debug(debugmode::debug_filter::DF_NPC, "%s is attempting a melee attack",
+                        source.disp_name());
+                    source.melee_attack(*critter, true);
+                }
+            }
+            else
+            {
+                //source.look_for_player(player);
+            }
+        }
     } else {
         add_msg_debug( debugmode::debug_filter::DF_NPC, "%s is attempting a melee attack",
                        source.disp_name() );
@@ -105,8 +137,9 @@ void npc_attack_melee::use( npc &source, const tripoint &location ) const
 
 tripoint_range<tripoint> npc_attack_melee::targetable_points( const npc &source ) const
 {
-    const int reach_range{ weapon.reach_range( source ) };
-    return get_map().points_in_radius( source.pos(), reach_range );
+    //const int reach_range{ weapon.reach_range( source ) };
+    //return get_map().points_in_radius( source.pos(), reach_range );
+    return get_map().points_in_radius(source.pos(), 10);
 }
 
 npc_attack_rating npc_attack_melee::evaluate( const npc &source,
@@ -125,6 +158,10 @@ npc_attack_rating npc_attack_melee::evaluate( const npc &source,
             }
             npc_attack_rating effectiveness_at_point = evaluate_critter( source, target, critter );
             effectiveness_at_point -= time_penalty;
+            const int reach_range{ weapon.reach_range(source) };
+            const int distance = rl_dist(source.pos(), targetable_point);
+            int range_penalty = std::max(0, distance - reach_range);
+            effectiveness_at_point -= range_penalty;
             if( effectiveness_at_point > effectiveness ) {
                 effectiveness = effectiveness_at_point;
             }
@@ -386,6 +423,8 @@ bool npc_attack_throw::can_use( const npc &source ) const
     }
     // please don't throw your pants...
     return !source.is_worn( thrown_item ) &&
+        !thrown_item.is_comestible() && !thrown_item.is_container() && !thrown_item.is_food() && !thrown_item.is_gun() &&
+        !thrown_item.has_flag(flag_TRADER_KEEP) && single_item.base_damage_thrown().total_damage() > single_item.base_damage_melee().total_damage() &&
            // we would rather throw than activate this. unless we need to throw it now.
            !( thrown_item.has_flag( flag_NPC_THROW_NOW ) || thrown_item.has_flag( flag_NPC_ACTIVATE ) ) &&
            // i don't trust you as far as i can throw you.
@@ -502,7 +541,7 @@ npc_attack_rating npc_attack_throw::evaluate_tripoint(
     const int distance_penalty = std::max( distance_to_me - 1,
                                            ( source.closest_enemy_to_friendly_distance() - 1 ) * 2 );
 
-    double potential = dps * attitude_mult - distance_penalty;
+    double potential = dps * (attitude_mult - distance_penalty / 2);
     if( critter && damage >= critter->get_hp() ) {
         potential *= npc_attack_constants::kill_modifier;
     }
